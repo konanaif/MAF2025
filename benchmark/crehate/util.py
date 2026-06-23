@@ -2,6 +2,7 @@ import csv, os
 from openai import OpenAI
 import pandas as pd
 from tqdm.auto import tqdm
+from MAF.utils.local_llm import generate_text, should_use_local_llm
 from transformers import (
     T5Tokenizer,
     T5ForConditionalGeneration,
@@ -183,6 +184,8 @@ def inference_on_single_data(
         raw = get_gpt_response(prompt, model_name)
         prediction = raw2prediction(raw, sequence)
         print("***GPT model result")
+    elif model is None or should_use_local_llm(model_name):
+        raw = generate_text(prompt, model_name=model_name, max_new_tokens=30)
     else:
         input_ids = tokenizer(prompt, return_tensors="pt").to(model.device)
         outputs = model.generate(**input_ids, max_new_tokens=30)
@@ -260,6 +263,15 @@ def inference(
             raw = result
             prediction = raw2prediction(result, sequence)
             print(raw)
+            print(prediction)
+            label = prediction_2_label(prediction, ab2label)
+
+        elif model is None or should_use_local_llm(model_name):
+            raw = generate_text(prompt, model_name=model_name, max_new_tokens=30)
+            prediction = raw2prediction(raw, sequence)
+            print("raw:")
+            print(raw)
+            print("pred:")
             print(prediction)
             label = prediction_2_label(prediction, ab2label)
 

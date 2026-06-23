@@ -25,6 +25,34 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Trained on [[[  {}  ]]] device.".format(device))
 
 
+def _get_int_env(name, default=None):
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _resnet50(pretrained=True):
+    if os.environ.get("MAF_IMAGE_USE_PRETRAINED", "1") == "0":
+        pretrained = False
+    try:
+        return models.resnet50(pretrained=pretrained)
+    except Exception as exc:
+        if not pretrained:
+            raise
+        print(f"Could not load pretrained ResNet50 weights ({exc}); using random weights.")
+        return models.resnet50(pretrained=False)
+
+
+def _checkpoint_state_dict(checkpoint):
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        return checkpoint["state_dict"]
+    return checkpoint
+
+
 class MultiDimAverageMeter(object):
     def __init__(self, dims=None):
         if dims != None:
@@ -108,7 +136,7 @@ class MaskingModel(nn.Module):
 class Filter_Net(nn.Module):
     def __init__(self, output_dim):
         super(Filter_Net, self).__init__()
-        self.backbone = models.resnet50(pretrained=True)
+        self.backbone = _resnet50(pretrained=True)
         input_dim = self.backbone.fc.in_features
         self.output_dim = output_dim
         self.backbone.fc = MaskingModel(input_dim, output_dim=self.output_dim)
@@ -124,17 +152,40 @@ class DFDataset(Dataset):
         ATTR_DIR = ATTR_DIR_.replace(".txt", ".csv")
         self.meta_data = pd.read_csv(ATTR_DIR)
         self.split_df = pd.read_csv(META_DIR)
-        self.meta_data["split"] = self.split_df["partition"]
+        if {"image_id", "partition"}.issubset(self.split_df.columns):
+            self.meta_data = self.meta_data.merge(
+                self.split_df[["image_id", "partition"]], on="image_id", how="inner"
+            )
+            self.meta_data["split"] = self.meta_data["partition"]
+        else:
+            self.meta_data["split"] = self.split_df["partition"]
         self.split_dict = {"train": 0, "val": 1, "test": 2}
         self.meta_data = self.meta_data[
             self.meta_data["split"] == self.split_dict[split]
         ]
+        max_samples = (
+            _get_int_env(f"MAF_CELEBA_{split.upper()}_MAX_SAMPLES")
+            or _get_int_env("MAF_CELEBA_MAX_SAMPLES_PER_SPLIT")
+            or _get_int_env("MAF_IMAGE_MAX_SAMPLES_PER_SPLIT")
+        )
+        if max_samples:
+            grouped = self.meta_data.groupby(
+                ["Blond_Hair", "Male"], group_keys=False
+            ).head(max(1, max_samples // 4))
+            if len(grouped) < max_samples:
+                remainder = self.meta_data.drop(grouped.index).head(
+                    max_samples - len(grouped)
+                )
+                grouped = pd.concat([grouped, remainder])
+            self.meta_data = grouped.head(max_samples)
         self.image_idx = self.meta_data["image_id"].values
         self.label_idx = self.meta_data["Blond_Hair"].values
         self.sens_idx = self.meta_data["Male"].values
         self.attr = np.vstack((self.label_idx, self.sens_idx)).T
 
-        class_counts = torch.bincount(torch.from_numpy(self.attr[:, 0]).cpu())
+        class_counts = torch.bincount(
+            torch.from_numpy(self.attr[:, 0]).cpu(), minlength=2
+        ).clamp_min(1)
         class_weights = 1.0 / class_counts.float()
         self.class_weights = class_weights / class_weights.sum()
 
@@ -161,7 +212,7 @@ class DFDataset(Dataset):
         return self.image_idx.size
 
     def __getitem__(self, idx):
-        img = Image.open(self.IMG_DIR + "/" + self.image_idx[idx])
+        img = Image.open(self.IMG_DIR + "/" + self.image_idx[idx]).convert("RGB")
         img = self.transform(img)
         attr = self.attr[idx]
 
@@ -206,7 +257,7 @@ class DimFiltering:
         self.model = Filter_Net(output_dim=self.n_class)
 
         # TODO: Baseline model(Resnet50)
-        self.baseline = models.resnet50(pretrained=True)
+        self.baseline = _resnet50(pretrained=True)
         in_features = self.baseline.fc.in_features
         self.baseline.fc = nn.Linear(in_features, self.n_class, bias=False)
         # TODO: criterion
@@ -215,6 +266,7 @@ class DimFiltering:
     def train(self, models_):
         print("Train start")
         file_path = self.model_dir
+        os.makedirs(file_path, exist_ok=True)
         optimizer = torch.optim.SGD(
             models_.parameters(),
             lr=self.learning_rate,
@@ -319,10 +371,14 @@ class DimFiltering:
 
     def evaluation(self, models_):
         if isinstance(models_, Filter_Net):
-            state_dict = torch.load(self.model_dir + "Filter_model.th")
+            checkpoint = torch.load(
+                self.model_dir + "Filter_model.th", map_location=self.device
+            )
         else:
-            state_dict = torch.load(self.model_dir + "baseline.th")
-        models_.load_state_dict(state_dict["state_dict"], strict=True)
+            checkpoint = torch.load(
+                self.model_dir + "baseline.th", map_location=self.device
+            )
+        models_.load_state_dict(_checkpoint_state_dict(checkpoint), strict=True)
         models_.eval()
         models_ = models_.to(self.device)
         print("*" * 15, "Test Start", "*" * 15)
@@ -358,8 +414,8 @@ class FairDimFilter:
         self.model_dir = os.environ["PYTHONPATH"] + "/MAF/model/FairFiltering/"
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.batch_size = 100
-        self.n_epoch = 100
+        self.batch_size = _get_int_env("MAF_IMAGE_BATCH_SIZE", 100)
+        self.n_epoch = _get_int_env("MAF_IMAGE_EPOCHS", 100)
         self.learning_rate = 0.003
         self.patience = 20
         self.momentum = 0.9
@@ -370,7 +426,9 @@ class FairDimFilter:
     def load_and_preprocess_data(self):
         if self.dataset_name == "celeba":
             self.celeba = CelebADataset()
-            self.celeba.to_dataset()  # 데이터 전처리 및 csv 저장
+            self.celeba.prepare_selected_csv(
+                force=os.environ.get("MAF_REBUILD_CELEBA_SELECTED_CSV") == "1"
+            )
         elif self.dataset_name == "other_dataset":
             self.other_dataset = OtherDataset()
             self.dataset = self.other_dataset.to_dataset()
@@ -435,8 +493,9 @@ class FairDimFilter:
         filter_model_path = self.model_dir + "Filter_model.th"
         if os.path.exists(filter_model_path):
             print("Loading existing filter model...")
+            checkpoint = torch.load(filter_model_path, map_location=self.device)
             self.dim_filter.model.load_state_dict(
-                torch.load(filter_model_path), strict=False
+                _checkpoint_state_dict(checkpoint), strict=False
             )
         else:
             print("Training new filter model...")
@@ -461,8 +520,9 @@ class FairDimFilter:
         baseline_path = self.model_dir + "baseline.th"
         if os.path.exists(baseline_path):
             print("Loading existing baseline model...")
-            self.dim_filter.model.load_state_dict(
-                torch.load(baseline_path), strict=False
+            checkpoint = torch.load(baseline_path, map_location=self.device)
+            self.dim_filter.baseline.load_state_dict(
+                _checkpoint_state_dict(checkpoint), strict=False
             )
         else:
             print("Training new baseline model...")

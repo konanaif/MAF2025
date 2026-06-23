@@ -11,10 +11,15 @@ from tqdm.auto import tqdm
 from datetime import datetime
 
 #
+from MAF.utils.common import fix_seed
+from MAF.utils.local_llm import (
+    generate_text,
+    resolve_local_model_name,
+    should_use_local_llm,
+)
 import MAF.benchmark.kobbq.util as util
 import MAF.benchmark.kobbq.process_data as pcd
 import MAF.benchmark.kobbq.evaluation as eval
-from MAF.utils.common import fix_seed
 
 parent_dir = os.environ["PYTHONPATH"]
 data_dir = parent_dir + "/MAF/data/kobbq/"
@@ -62,13 +67,22 @@ class InferenceArguments:
         """
     self.data_path = data_dir+f'kobbq_result/KoBBQ_test/KoBBQ_test_evaluation_{prompt_id}.json'
     self.output_dir = data_dir+f'kobbq_result/outputs/raw/KoBBQ_test_{prompt_id}'
-    """
-        self.model_name = model_name.replace("/", "-")
+        """
+        self.model_name = model_name
         self.is_custom_model = False
         if (custom_model_path != None) and (custom_model_tokenizer != None):
             self.is_custom_model = True
             self.custom_model_path = custom_model_path
             self.custom_model_tokenizer = custom_model_tokenizer
+        elif model_name not in (
+            util.GPT_MODEL
+            + list(util.HYPERCLOVA_MODEL.keys())
+            + util.CLAUDE_MODEL
+            + util.KOALPACA_MODEL
+        ):
+            self.is_custom_model = True
+            self.custom_model_path = model_name
+            self.custom_model_tokenizer = model_name
 
 
 def inference(args):
@@ -80,10 +94,11 @@ def inference(args):
         raise NotImplementedError
 
     koalpaca = None
+    custom_model = None
     if model_name in util.KOALPACA_MODEL:  # run with GPU
         koalpaca = util.load_koalpaca(model_name)
 
-    if args.is_custom_model:
+    if args.is_custom_model and not should_use_local_llm(model_name):
         custom_model = util.load_custom_model(
             args.custom_model_path, args.custom_model_tokenizer
         )
@@ -117,6 +132,14 @@ def inference(args):
                 max_tokens=args.max_tokens,
                 batch_size=args.batch_size,
             )
+        elif should_use_local_llm(model_name):
+            result = [
+                generate_text(
+                    prompt,
+                    model_name=model_name,
+                    max_new_tokens=args.max_tokens,
+                )
+            ]
         else:
             result = util.get_custom_model_response(
                 prompt,
@@ -136,12 +159,11 @@ def inference(args):
                     "B": args.data["choices"][i][1],
                     "C": args.data["choices"][i][2],
                 }
+                prediction_key = pcd.raw2prediction(raw=result[0], choices=choices)
                 responses[f"res_{i}"] = {
                     "prompt": prompt,
                     "truth": choices[args.data["data"][i][-2]],
-                    "prediction": choices[
-                        pcd.raw2prediction(raw=result[0], choices=choices)
-                    ],
+                    "prediction": choices.get(prediction_key, f"OOC: {result[0]}"),
                 }
                 break
             except KeyboardInterrupt:
@@ -177,6 +199,8 @@ def check_korean_bias(
           custom_model_path {custom_model_path}
           custom_model_tokenizer {custom_model_tokenizer}"""
     )
+    if should_use_local_llm(model_name):
+        model_name = resolve_local_model_name(model_name)
 
     print(f"*********Prompt ID {data_args.prompt_id}*********")
     data = pcd.preprocess(data_args, is_demo=True)
@@ -186,7 +210,7 @@ def check_korean_bias(
         model_name=model_name,
         data=data,
         custom_model_path=custom_model_path,
-        custom_model_tokenizer=custom_model_path,
+        custom_model_tokenizer=custom_model_tokenizer,
     )
     return inference(infargs)
 

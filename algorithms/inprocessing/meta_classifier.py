@@ -16,6 +16,7 @@ class MetaFairClassifier:
         self.dataset_name = dataset_name
         self.protected = protected
         self.fairness_type = fairness_type
+        self.fit_warnings = []
         np.random.seed(1)
         self._load_and_preprocess_data()
 
@@ -48,7 +49,18 @@ class MetaFairClassifier:
         mfc = aifMetaFairClassifier(
             tau=tau, sensitive_attr=self.protected, type=self.fairness_type
         )
-        mfc.fit(self.dataset_orig_train)
+        try:
+            mfc.fit(self.dataset_orig_train)
+        except TypeError as exc:
+            if tau != 0 and "NoneType" in str(exc):
+                warning = (
+                    "AIF360 MetaFairClassifier failed for tau="
+                    f"{tau} with params=None; falling back to tau=0."
+                )
+                self.fit_warnings.append(warning)
+                print(warning)
+                return self.fit(tau=0)
+            raise
         test_pred = mfc.predict(self.dataset_orig_test)
         return test_pred
 

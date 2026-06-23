@@ -13,7 +13,24 @@ CLAUDE_NAMES = ["claude-3-haiku-20240307", "claude-3-5-sonnet-20241022"]
 GEMINI_NAMES = ["gemini-2.0-flash-001"]
 TOGETHERAI_NAMES = ["Llama-3.3-70B-Instruct-Turbo", "Qwen2.5-72B-Instruct-Turbo"]
 
-        
+
+class LocalHF:
+    def get_response(self, model_name, prompt, **model_kwargs):
+        import os
+
+        from MAF.utils.local_llm import generate_text, resolve_local_model_name
+
+        default_max_new_tokens = int(os.environ.get("MAF_LOCAL_LLM_MAX_NEW_TOKENS", 96))
+        max_new_tokens = model_kwargs.pop(
+            "max_new_tokens", model_kwargs.pop("max_tokens", default_max_new_tokens)
+        )
+        return generate_text(
+            prompt,
+            model_name=resolve_local_model_name(model_name),
+            max_new_tokens=max_new_tokens,
+        )
+
+
 def model_inference(model_name, df, output_path=None, return_df=False, **model_kwargs):
     '''
     df: pandas.DataFrame with columns named "id" and "input"
@@ -39,7 +56,12 @@ def model_inference(model_name, df, output_path=None, return_df=False, **model_k
         done_ids = []
     
     sleep = 0
-    if model_name in GPT_NAMES:
+    from MAF.utils.local_llm import resolve_local_model_name, should_use_local_llm
+
+    if should_use_local_llm(model_name):
+        model_name = resolve_local_model_name(model_name)
+        model = LocalHF()
+    elif model_name in GPT_NAMES:
         from .gpt_utils import GPT
         model = GPT()
     elif model_name in AZURE_NAMES:

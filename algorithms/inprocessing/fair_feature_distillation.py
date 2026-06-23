@@ -20,6 +20,16 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Trained on [[[  {}  ]]] device.".format(device))
 
 
+def _get_int_env(name, default=None):
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 class FFDdataset(Dataset):
     def __init__(self, X, y, z, image_shape):
         self.X = (
@@ -463,8 +473,8 @@ class FairFeatureDistillation:
         self.load_and_preprocess_data()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.image_shape = (3, 64, 64)
-        self.batch_size = 64
-        self.n_epoch = 20
+        self.batch_size = _get_int_env("MAF_IMAGE_BATCH_SIZE", 64)
+        self.n_epoch = _get_int_env("MAF_IMAGE_EPOCHS", 20)
         self.learning_rate = 0.01
 
     def load_and_preprocess_data(self):
@@ -510,7 +520,10 @@ class FairFeatureDistillation:
         )
 
         self.train_loader = DataLoader(
-            self.train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            drop_last=len(self.train_dataset) >= self.batch_size,
         )
         self.test_loader = DataLoader(
             self.test_dataset,
@@ -524,7 +537,7 @@ class FairFeatureDistillation:
             self.n_epoch,
             self.batch_size,
             self.learning_rate,
-            self.device,
+            self.image_shape,
         )
         self.ffd.train_teacher()
         self.ffd.train_student()

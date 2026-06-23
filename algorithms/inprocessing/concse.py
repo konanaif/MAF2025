@@ -651,8 +651,8 @@ class TaskSpecificEvaluator:
         self.test_collator.data_loaders.reset()
         try:
             print("Load .pt in ", self.ckpt_savepath + ".pt")
-            self.model.load_state_dict(
-                torch.load(self.ckpt_savepath + ".pt", map_location=self.device)
+            _load_state_dict_compat(
+                self.model, self.ckpt_savepath + ".pt", self.device
             )
         except FileNotFoundError:
             print(self.ckpt_savepath + ".pt")
@@ -750,6 +750,16 @@ class Arguments:
         self.ckpt_savepath = os.path.join(save_dir, save_filename)
 
 
+def _load_state_dict_compat(model, ckpt_path, device):
+    state_dict = torch.load(ckpt_path, map_location=device)
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    if incompatible.missing_keys:
+        print("Missing checkpoint keys:", incompatible.missing_keys)
+    if incompatible.unexpected_keys:
+        print("Unexpected checkpoint keys:", incompatible.unexpected_keys)
+    return incompatible
+
+
 def set_config(base_model: str):
     parent_dir = os.environ["PYTHONPATH"]
     if base_model == "mbert_uncased" or base_model == "xlmr_base":
@@ -811,9 +821,7 @@ def mitigate_concse(base_model: str):
             model_config=model_config,
         )
         print("Start to load model")
-        model.load_state_dict(
-            torch.load(args.ckpt_savepath + ".pt", map_location=device)
-        )
+        _load_state_dict_compat(model, args.ckpt_savepath + ".pt", device)
 
     if "xlmr" in args.model:
         model = RobertaForCL.from_pretrained(
@@ -822,9 +830,7 @@ def mitigate_concse(base_model: str):
             model_config=model_config,
         )
         print("Start to load model")
-        model.load_state_dict(
-            torch.load(args.ckpt_savepath + ".pt", map_location=device)
-        )
+        _load_state_dict_compat(model, args.ckpt_savepath + ".pt", device)
 
     model.to(device)
     taskSpecificEvaluator = TaskSpecificEvaluator(

@@ -12,6 +12,20 @@ if _PROJECT_ROOT not in sys.path:
 # 이제 datamodule.dataset에서 가져오기
 from datamodule.dataset import PubFigDataset, aifData
 
+
+def _has_local_pubfig_data(pubfig):
+    image_dir = pubfig.ROOT
+    merged_csv = os.path.join(os.path.dirname(image_dir), "pubfig_attr_merged.csv")
+    has_images = (
+        os.path.isdir(image_dir)
+        and any(
+            name.lower().endswith((".jpg", ".jpeg", ".png"))
+            for name in os.listdir(image_dir)
+        )
+    )
+    return has_images and os.path.exists(merged_csv)
+
+
 class dep(Dataset):
     """
     PubFigDataset/aifData 기반 AIF360 스타일 데이터를
@@ -29,10 +43,8 @@ class dep(Dataset):
 
         # 1) 원본 PubFig 로딩 (너 스크립트 로직과 동일)
         self.pubfig = PubFigDataset()
-        # 샘플 폴더 확인 후 필요 시 다운로드
-        if not os.path.isdir(os.path.join(self.root, 'Sample', 'pubfig')) and not os.path.isdir('./Sample/pubfig'):
-            # self.pubfig.download() 는 내부 경로 기준이므로,
-            # 루트 기준으로 동작 안 하면 여기서 한 번 호출해 주는 정도로만.
+        # DMLBG uses the shared MAF PubFig files, not the legacy Sample/pubfig path.
+        if not _has_local_pubfig_data(self.pubfig):
             self.pubfig.download()
 
         # 2) dict 형태 데이터셋 획득

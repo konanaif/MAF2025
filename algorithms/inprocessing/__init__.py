@@ -1,5 +1,5 @@
-from MAF.algorithms.inprocessing.concse import mitigate_concse
-from MAF.algorithms.inprocessing.INTapt.intapt import mitigate_intapt
+import importlib
+
 from MAF.algorithms.inprocessing.exponentiated_gradient_reduction import (
     ExponentiatedGradientReduction,
 )
@@ -22,5 +22,32 @@ from MAF.algorithms.inprocessing.sipm_lfr import SIPMLFR
 from MAF.algorithms.inprocessing.gerry_fair_classifier import GerryFairClassifier
 from MAF.algorithms.inprocessing.grid_search_reduction import GridSearchReduction
 from MAF.algorithms.inprocessing.dmlbg import *
-from MAF.algorithms.inprocessing.fairasr import *
 
+
+def __getattr__(name):
+    optional_modules = {
+        "concse": "MAF.algorithms.inprocessing.concse",
+        "fairasr": "MAF.algorithms.inprocessing.fairasr",
+    }
+    optional_symbols = {
+        "mitigate_concse": ("MAF.algorithms.inprocessing.concse", "mitigate_concse"),
+        "mitigate_intapt": (
+            "MAF.algorithms.inprocessing.INTapt.intapt",
+            "mitigate_intapt",
+        ),
+        "FairASR": ("MAF.algorithms.inprocessing.fairasr", "FairASR"),
+    }
+
+    if name in optional_modules:
+        module = importlib.import_module(optional_modules[name])
+        globals()[name] = module
+        return module
+
+    if name in optional_symbols:
+        module_name, symbol_name = optional_symbols[name]
+        module = importlib.import_module(module_name)
+        symbol = getattr(module, symbol_name)
+        globals()[name] = symbol
+        return symbol
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

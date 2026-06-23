@@ -1,9 +1,13 @@
 import pandas as pd
 from openai import OpenAI
 import sys, os
+from MAF.utils.local_llm import generate_text, should_use_local_llm
 
 
 def get_gpt4_response(prompt: str):
+    if should_use_local_llm("gpt-4-turbo"):
+        return generate_text(prompt, max_new_tokens=128)
+
     client = OpenAI(
         # This is the default and can be omitted
         api_key=os.environ["OPENAI_API_KEY"],

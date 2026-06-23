@@ -15,6 +15,16 @@ from aif360.datasets import StandardDataset, AdultDataset
 parent_dir = os.environ["PYTHONPATH"]
 
 
+def _get_int_env(name, default=None):
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 class aifData(StandardDataset):
     def __init__(
         self,
@@ -224,22 +234,19 @@ class CelebADataset(StandardDataset):
         else:
             print("Download failed. Please try again.")
 
-    def to_dataset(self):
-        img_files = glob.glob(self.IMAGE_DIR + "/*.jpg")
-        print(f"celeba image files {len(img_files)}")
-        img_keys = []
-        img_list = []
-        for ifn in tqdm(img_files):
-            try:
-                img = Image.open(ifn).convert("RGB").resize((224, 224))
-            except:
-                continue
+    def selected_attr_file(self):
+        return self.ATTR_FILE.replace(".txt", ".csv")
 
-            img = np.asarray(img)
-            if img.size == 3 * 224 * 224:
-                key = os.path.basename(ifn)
-                img_keys.append(key)
-                img_list.append(img)
+    def prepare_selected_csv(self, force=False):
+        selected_file = self.selected_attr_file()
+        if os.path.exists(selected_file) and not force:
+            try:
+                cached = pd.read_csv(selected_file)
+                if {"image_id", "Blond_Hair", "Male"}.issubset(cached.columns) and len(cached) > 0:
+                    print(f"Using cached CelebA selected attributes: {selected_file}")
+                    return selected_file
+            except Exception:
+                pass
 
         with open(self.ATTR_FILE, "r") as f:
             lines = f.readlines()
@@ -254,22 +261,46 @@ class CelebADataset(StandardDataset):
                 attrs = [1 if int(x) > 0 else 0 for x in parts[1:]]
                 data.append([filename] + attrs)
 
-        attribute = dd.from_pandas(
-            pd.DataFrame(data, columns=["image_id"] + attribute_names),
-            npartitions=20000,
-        )
-        attribute = attribute[attribute["image_id"].isin(img_keys)]
-
         TARGET_NAME = "Blond_Hair"
         BIAS_NAME = "Male"
         SELECTED_COLUMNS = ["image_id", TARGET_NAME, BIAS_NAME]
 
-        print("creating selected_df")
-        selected_df = attribute[SELECTED_COLUMNS]
-        selected_df.to_csv(
-            self.ATTR_FILE.replace(".txt", ".csv"), index=True, single_file=True
-        )
+        attribute = pd.DataFrame(data, columns=["image_id"] + attribute_names)
+        img_keys = {
+            os.path.basename(path) for path in glob.glob(self.IMAGE_DIR + "/*.jpg")
+        }
+        selected_df = attribute[attribute["image_id"].isin(img_keys)][SELECTED_COLUMNS]
+
+        print(f"creating selected CelebA attribute csv with {len(selected_df)} rows")
+        selected_df.to_csv(selected_file, index=False)
         print("finish to create a selected_df")
+        return selected_file
+
+    def to_dataset(self):
+        TARGET_NAME = "Blond_Hair"
+        BIAS_NAME = "Male"
+        max_samples = _get_int_env("MAF_IMAGE_MAX_SAMPLES")
+        self.prepare_selected_csv()
+        selected_df = pd.read_csv(self.selected_attr_file())
+        if max_samples:
+            selected_df = selected_df.head(max_samples)
+
+        img_keys = selected_df["image_id"].tolist()
+        img_list = []
+        valid_keys = []
+        for key in tqdm(img_keys):
+            ifn = os.path.join(self.IMAGE_DIR, key)
+            try:
+                img = Image.open(ifn).convert("RGB").resize((224, 224))
+            except:
+                continue
+
+            img = np.asarray(img)
+            if img.size == 3 * 224 * 224:
+                valid_keys.append(key)
+                img_list.append(img)
+
+        selected_df = selected_df[selected_df["image_id"].isin(valid_keys)]
 
         # Convert Target and Bias to categorical
         def categorize(score):
@@ -278,11 +309,10 @@ class CelebADataset(StandardDataset):
             else:
                 return 0
 
-        attribute = attribute.compute()
         vfunc = np.vectorize(categorize)
-        target_vect = attribute[TARGET_NAME].to_numpy()
+        target_vect = selected_df[TARGET_NAME].to_numpy()
         target_vect = vfunc(target_vect)
-        bias_vect = attribute[BIAS_NAME].to_numpy()
+        bias_vect = selected_df[BIAS_NAME].to_numpy()
         bias_vect = vfunc(bias_vect)
 
         # Make images to DataFrame (for using aif360)
@@ -849,11 +879,47 @@ class PubFigDataset(StandardDataset):
         )
 
     def to_dataset(self):
-        img_files = glob.glob(parent_dir + "/MAF/data/pubfig/image/*")
+        max_samples = _get_int_env("MAF_IMAGE_MAX_SAMPLES")
+        img_path_by_key = {
+            os.path.basename(path).replace(".jpg", ""): path
+            for path in sorted(glob.glob(parent_dir + "/MAF/data/pubfig/image/*"))
+        }
+
+        attribute = pd.read_csv(
+            parent_dir + "/MAF/data/pubfig/pubfig_attr_merged.csv", encoding="utf-8"
+        )
+        attribute = attribute[attribute["key"].isin(img_path_by_key.keys())].copy()
+
+        TARGET_NAME = "Male"
+        BIAS_NAME = "Heavy Makeup"
+
+        def categorize(score):
+            if score > 0:
+                return 1
+            else:
+                return 0
+
+        if max_samples:
+            attr_for_groups = attribute.copy()
+            attr_for_groups["_target"] = attr_for_groups[TARGET_NAME].apply(categorize)
+            attr_for_groups["_bias"] = attr_for_groups[BIAS_NAME].apply(categorize)
+            per_group = max(1, max_samples // 4)
+            grouped = attr_for_groups.groupby(
+                ["_target", "_bias"], group_keys=False
+            ).head(per_group)
+            if len(grouped) < max_samples:
+                remainder = attr_for_groups.drop(grouped.index).head(
+                    max_samples - len(grouped)
+                )
+                grouped = pd.concat([grouped, remainder])
+            attribute = grouped.drop(columns=["_target", "_bias"]).head(max_samples)
+
+        img_files = [img_path_by_key[key] for key in attribute["key"].tolist()]
 
         # Load the images
         img_keys = []
         img_list = []
+        valid_attr_indices = []
         for ifn in tqdm(img_files):
             try:
                 img = Image.open(ifn).resize((64, 64))
@@ -866,21 +932,9 @@ class PubFigDataset(StandardDataset):
                 key = os.path.basename(ifn).replace(".jpg", "")
                 img_list.append(img)
                 img_keys.append(key)
+                valid_attr_indices.append(key)
 
-        # Load the attribute file
-        attribute = pd.read_csv(
-            parent_dir + "/MAF/data/pubfig/pubfig_attr_merged.csv", encoding="utf-8"
-        )
-        attribute = attribute[attribute["key"].isin(img_keys)]
-        TARGET_NAME = "Male"
-        BIAS_NAME = "Heavy Makeup"
-
-        # Convert Target and Bias to categorical
-        def categorize(score):
-            if score > 0:
-                return 1
-            else:
-                return 0
+        attribute = attribute.set_index("key").reindex(valid_attr_indices).reset_index()
 
         vfunc = np.vectorize(categorize)
         target_vect = attribute[TARGET_NAME].to_numpy()
