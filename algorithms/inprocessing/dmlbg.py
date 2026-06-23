@@ -24,6 +24,21 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)
 
+
+def _env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _default_pretrained_backbone():
+    return _env_flag(
+        "MAF_DMLBG_PRETRAINED",
+        _env_flag("MAF_IMAGE_USE_PRETRAINED", False),
+    )
+
+
 # --- ADD: 프록시 텐서 추출 유틸 ---
 def _extract_proxies_tensor(crit):
     """
@@ -86,6 +101,12 @@ def get_args():
     parser.add_argument('--iota', default = 0.0, type = float, help = 'DDML hyperparameter lambda setting')
     parser.add_argument('--kap', default = 0.0, type = float, help = 'DDML hyperparameter lambda setting')
     parser.add_argument('--bg-start', default=0.0, type=int, help='이 에폭부터 z_bg 학습/분리 손실 활성화 (그 전에는 꺼짐)')
+    parser.add_argument(
+        '--pretrained-backbone',
+        action=argparse.BooleanOptionalAction,
+        default=_default_pretrained_backbone(),
+        help='Use external pretrained backbone weights. Disable to avoid network downloads.'
+    )
     return parser.parse_args()
 
 def dmlbg_main(args):
@@ -150,18 +171,19 @@ def dmlbg_main(args):
     best_recalls = np.zeros(len(Ks), dtype=np.float32)  # 각 K 별 최고값
     best_epoch_k = [-1] * len(Ks)                       # 각 K 최고가 나온 epoch
     best_epoch = -1                                     # (top-1 기준) 최고 epoch
+    pretrained_backbone = bool(getattr(args, "pretrained_backbone", True))
     
     # Backbone Model
     if args.model.find('googlenet')+1:
-        model = googlenet(embedding_size=args.sz_embedding, pretrained=True, is_norm=args.l2_norm, bn_freeze = args.bn_freeze)
+        model = googlenet(embedding_size=args.sz_embedding, pretrained=pretrained_backbone, is_norm=args.l2_norm, bn_freeze = args.bn_freeze)
     elif args.model.find('bn_inception')+1:
-        model = bn_inception(embedding_size=args.sz_embedding, pretrained=True, is_norm=args.l2_norm, bn_freeze = args.bn_freeze, disent= args.disent)
+        model = bn_inception(embedding_size=args.sz_embedding, pretrained=pretrained_backbone, is_norm=args.l2_norm, bn_freeze = args.bn_freeze, disent= args.disent)
     elif args.model.find('resnet18')+1:
-        model = Resnet18(embedding_size=args.sz_embedding, pretrained=True, is_norm=args.l2_norm, bn_freeze = args.bn_freeze)
+        model = Resnet18(embedding_size=args.sz_embedding, pretrained=pretrained_backbone, is_norm=args.l2_norm, bn_freeze = args.bn_freeze)
     elif args.model.find('resnet50')+1:
-        model = Resnet50(embedding_size=args.sz_embedding, pretrained=True, is_norm=args.l2_norm, bn_freeze = args.bn_freeze, disent= args.disent)
+        model = Resnet50(embedding_size=args.sz_embedding, pretrained=pretrained_backbone, is_norm=args.l2_norm, bn_freeze = args.bn_freeze, disent= args.disent)
     elif args.model.find('resnet101')+1:
-        model = Resnet101(embedding_size=args.sz_embedding, pretrained=True, is_norm=args.l2_norm, bn_freeze = args.bn_freeze)
+        model = Resnet101(embedding_size=args.sz_embedding, pretrained=pretrained_backbone, is_norm=args.l2_norm, bn_freeze = args.bn_freeze)
     model = model.cuda()
 
     if args.gpu_id == -1:
@@ -468,6 +490,7 @@ def migitage_dmlbg(**kwargs):
             self.gpu_id = 0
             self.nb_workers = 4
             self.model = "bn_inception"
+            self.pretrained_backbone = _default_pretrained_backbone()
             self.loss = "Proxy_Anchor"
             self.optimizer = "adamw"
             self.lr = 1e-4

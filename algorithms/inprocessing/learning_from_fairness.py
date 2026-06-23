@@ -22,6 +22,16 @@ device = torch.device("cuda" if USE_CUDA else "cpu")
 print("Train on [[[  {}  ]]] device.".format(device))
 
 
+def _get_int_env(name, default=None):
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 def mapping(class_vector):
     # Flatten
     class_vector = class_vector.ravel()
@@ -312,8 +322,8 @@ class LearningFromFairness:
         self.load_and_preprocess_data()
         self.device = device
         self.image_shape = (3, 64, 64)
-        self.batch_size = 32
-        self.num_epochs = 20
+        self.batch_size = _get_int_env("MAF_IMAGE_BATCH_SIZE", 32)
+        self.num_epochs = _get_int_env("MAF_IMAGE_EPOCHS", 20)
         self.z_dim = 20
         self.learning_rate = 0.01
 

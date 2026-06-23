@@ -1,4 +1,5 @@
 import re
+import os
 import random
 import argparse
 import numpy as np
@@ -34,9 +35,18 @@ def remove_hex(string):
 
 
 def kobbq_test_comb_idx():
-    df_kobbq_test_samples = pd.read_csv(
-        "https://raw.githubusercontent.com/naver-ai/KoBBQ/main/data/KoBBQ_test_samples.tsv", sep='\t'
-    )
+    parent_dir = os.environ.get("PYTHONPATH")
+    local_path = None
+    if parent_dir:
+        local_path = Path(parent_dir) / "MAF/data/kobbq/kobbq_data/KoBBQ_test_samples.tsv"
+
+    if local_path and local_path.is_file():
+        df_kobbq_test_samples = pd.read_csv(local_path, sep="\t")
+    else:
+        df_kobbq_test_samples = pd.read_csv(
+            "https://raw.githubusercontent.com/naver-ai/KoBBQ/main/data/KoBBQ_test_samples.tsv",
+            sep="\t",
+        )
     test_comb_idx = pd.DataFrame({
         "template_id": df_kobbq_test_samples["sample_id"].apply(lambda x: '-'.join(x.split('-')[0:2])),
         "comb_idx": df_kobbq_test_samples["sample_id"].apply(lambda x: x.split('-')[2])

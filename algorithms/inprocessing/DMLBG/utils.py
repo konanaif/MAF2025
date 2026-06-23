@@ -176,7 +176,12 @@ def evaluate_cos(model, dataloader):
     X = l2_norm(X)
 
     # get predictions by assigning nearest 8 neighbors with cosine
-    K = 32
+    recall_ks = [1, 2, 4, 8, 16, 32]
+    max_neighbors = max(0, len(T) - 1)
+    if max_neighbors == 0:
+        return [0.0 for _ in recall_ks]
+
+    K = min(max(recall_ks), max_neighbors)
     Y = []
     xs = []
     
@@ -185,8 +190,8 @@ def evaluate_cos(model, dataloader):
     Y = Y.float().cpu()
     
     recall = []
-    for k in [1, 2, 4, 8, 16, 32]:
-        r_at_k = calc_recall_at_k(T, Y, k)
+    for k in recall_ks:
+        r_at_k = calc_recall_at_k(T, Y, min(k, max_neighbors))
         recall.append(r_at_k)
         print("R@{} : {:.3f}".format(k, 100 * r_at_k))
 

@@ -15,6 +15,7 @@ from MAF.benchmark.crehate.util import (
     load_model,
     inference_on_single_data,
 )
+from MAF.utils.local_llm import resolve_local_model_name, should_use_local_llm
 
 
 def infer_model_simple(model, tokenizer, context: str, model_name):
@@ -129,12 +130,17 @@ def check_hatespeech(
     custom_model_path=None,
     custom_model_tokenizer=None,
 ):
+    if should_use_local_llm(model_name):
+        model_name = resolve_local_model_name(model_name)
 
-    model, tokenizer = load_model(
-        model_name=model_name,
-        custom_model_path=custom_model_path,
-        custom_model_tokenizer=custom_model_tokenizer,
-    )
+    if should_use_local_llm(model_name):
+        model, tokenizer = None, None
+    else:
+        model, tokenizer = load_model(
+            model_name=model_name,
+            custom_model_path=custom_model_path,
+            custom_model_tokenizer=custom_model_tokenizer,
+        )
     if simple:
         return infer_model_simple(model, tokenizer, context, model_name)
     elif persona:

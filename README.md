@@ -111,7 +111,7 @@ MAF의 원활한 구동을 위해서는 특정 버전의 패키지들이 필요�
 ### Installation
 1. 저장소 복제
     ```bash
-    git clone https://github.com/konanaif/MAF.git
+    git clone https://github.com/konanaif/MAF2025.git
     ```
 
 2. 환경 설정
@@ -128,6 +128,13 @@ MAF의 원활한 구동을 위해서는 특정 버전의 패키지들이 필요�
     ```bash
     #OPENAI API KEY 설정 예시
     export OPENAI_API_KEY = 'your_api_key'
+    ```
+    `OPENAI_API_KEY`가 없으면 로컬 Hugging Face 모델을 사용할 수 있습니다.
+    ```bash
+    huggingface-cli download Qwen/Qwen2.5-1.5B-Instruct
+    export MAF_USE_LOCAL_LLM=1
+    export MAF_LOCAL_TEXT_MODEL=Qwen/Qwen2.5-1.5B-Instruct
+    # 캐시 없이 처음 실행할 경우 MAF_LOCAL_LLM_LOCAL_FILES_ONLY=0 설정
     ```
 
 4. 데이터 및 모델 세팅

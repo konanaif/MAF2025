@@ -2,7 +2,7 @@ import ast
 import argparse
 import types
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 import pandas as pd
 import os
 
@@ -14,9 +14,18 @@ import MAF.benchmark.bbg._4_evaluate as s4
 import MAF.benchmark.bbg._5_qualitative as s5
 
 from MAF.benchmark.bbg.utils.model_inference import model_inference
+from MAF.utils.local_llm import default_local_model_name, should_use_local_llm
 
 parent_dir = os.environ["PYTHONPATH"]
 data_dir = parent_dir + "/MAF/data/bbg/"
+
+
+def _default_text_model():
+    if should_use_local_llm("gpt-3.5-turbo-0125"):
+        return default_local_model_name()
+    return "gpt-3.5-turbo-0125"
+
+
 # -------------------------
 # Shared argument schema
 # -------------------------
@@ -37,10 +46,10 @@ class SharedConfig:
     # generation
     instruction_path: str = parent_dir + "/MAF/benchmark/bbg/utils/prompt_gen.csv"
     instruction_id: str = "Ko-1"
-    model: str = "gpt-3.5-turbo-0125"
+    model: str = field(default_factory=_default_text_model)
 
     # QA
-    qa_model: str = "gpt-3.5-turbo-0125"
+    qa_model: str = field(default_factory=_default_text_model)
     prompt_instruction_path: str = parent_dir + "/MAF/benchmark/bbg/utils/prompt_qa.csv"
     prompt_instruction_id: str = "Ko-42"
 

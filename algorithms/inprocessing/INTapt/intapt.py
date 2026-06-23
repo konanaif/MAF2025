@@ -16,11 +16,95 @@ import torch.distributed as dist
 
 from transformers import Wav2Vec2Processor, HubertForCTC
 from datasets import Dataset, load_dataset, concatenate_datasets, load_from_disk
-from evaluate import load
 
 from MAF.utils.common import fix_seed
 from MAF.datamodule.intapt_datacollator import DataCollatorCTCWithPaddingCoraal
 import MAF.algorithms.inprocessing.INTapt.util as util
+
+
+class _LocalSpeechMetric:
+    def __init__(self, metric_name):
+        if metric_name not in {"wer", "cer"}:
+            raise ValueError("INTapt eval_metric must be either 'wer' or 'cer'.")
+        self.metric_name = metric_name
+
+    def compute(self, predictions, references):
+        import jiwer
+
+        if self.metric_name == "wer":
+            return jiwer.wer(references, predictions)
+        return jiwer.cer(references, predictions)
+
+
+def _torch_version_lt_2_6():
+    version = torch.__version__.split("+", 1)[0]
+    parts = []
+    for part in version.split(".")[:2]:
+        try:
+            parts.append(int(part))
+        except ValueError:
+            parts.append(0)
+    while len(parts) < 2:
+        parts.append(0)
+    return tuple(parts) < (2, 6)
+
+
+def _torch_load_state_dict(path, map_location):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _default_device():
+    return os.environ.get(
+        "MAF_INTAPT_DEVICE", "cuda:0" if torch.cuda.is_available() else "cpu"
+    )
+
+
+def _load_hubert_for_ctc(model_path):
+    has_safetensors = os.path.exists(os.path.join(model_path, "model.safetensors"))
+    has_bin = os.path.exists(os.path.join(model_path, "pytorch_model.bin"))
+    if has_bin and not has_safetensors and _torch_version_lt_2_6():
+        raise RuntimeError(
+            "INTapt cannot load the cached HuBERT checkpoint with the current "
+            f"environment. torch={torch.__version__} is below the Transformers "
+            "safety requirement for pytorch_model.bin loading, and no "
+            "model.safetensors checkpoint exists in the cached HuBERT snapshot. "
+            "Upgrade torch to >=2.6 or provide a safetensors HuBERT checkpoint."
+        )
+
+    try:
+        return HubertForCTC.from_pretrained(model_path)
+    except ValueError as exc:
+        has_tf_checkpoint = os.path.exists(os.path.join(model_path, "tf_model.h5"))
+        is_torch_safety_gate = (
+            "torch.load" in str(exc) and "v2.6" in str(exc)
+        )
+        if is_torch_safety_gate and has_tf_checkpoint:
+            print(
+                "PyTorch checkpoint loading is blocked by the torch<2.6 "
+                "safety gate; loading HuBERT from tf_model.h5 instead."
+            )
+            try:
+                import tensorflow as tf
+
+                tf.keras.backend.clear_session()
+            except Exception:
+                pass
+            try:
+                return HubertForCTC.from_pretrained(
+                    model_path, from_tf=True, low_cpu_mem_usage=False
+                )
+            except Exception as tf_exc:
+                raise RuntimeError(
+                    "INTapt cannot load the cached HuBERT checkpoint with the "
+                    "current environment. Transformers blocks pytorch_model.bin "
+                    "loading when torch<2.6, and the available tf_model.h5 "
+                    "fallback also failed. Upgrade torch to >=2.6 or provide a "
+                    "safetensors HuBERT checkpoint."
+                ) from tf_exc
+        raise
 
 
 class Mine(nn.Module):
@@ -229,10 +313,13 @@ def load_model(
         + "/models--esyoon--INTapt-HuBERT-large-coraal-prompt-generator/snapshots/*"
     )[0]
     processor = Wav2Vec2Processor.from_pretrained(model_path)
-    model = HubertForCTC.from_pretrained(model_path)
+    model = _load_hubert_for_ctc(model_path)
     prompt_generator = PromptGenerator(args, model.config)
     prompt_generator.load_state_dict(
-        torch.load(os.path.join(prompt_generator_path, "prompt_generator.pt"))
+        _torch_load_state_dict(
+            os.path.join(prompt_generator_path, "prompt_generator.pt"),
+            map_location=args.device,
+        )
     )
 
     model.to(args.device)
@@ -291,7 +378,9 @@ def inference(args, model, prompt_generator, processor, metric, test_dataloader)
             wer = util.compute_metrics(
                 orig_pred.logits, batch["labels"], processor, metric
             )
-    total_wer += torch.tensor(wer["wer"]).to(args.device)
+        else:
+            raise ValueError("Invalid eval mode. Choose from 'intapt' or 'base'.")
+        total_wer += torch.tensor(wer["wer"]).to(args.device)
     return total_wer / steps
 
 
@@ -305,7 +394,7 @@ class Arguments:
         batch_size: int = 2,
         dataset_name: str = "coraal",
         eval_metric: str = "wer",
-        device: str = "cuda:1" if torch.cuda.is_available() else "cpu",
+        device: Optional[str] = None,
         prompt_length: int = 40,
         eval_mode: str = "intapt",
     ):
@@ -313,7 +402,7 @@ class Arguments:
         self.batch_size = batch_size
         self.dataset_name = dataset_name
         self.eval_metric = eval_metric
-        self.device = device
+        self.device = device or _default_device()
         self.prompt_length = prompt_length
         self.eval_mode = eval_mode
 
@@ -330,7 +419,7 @@ def get_args():
     parser.add_argument("--do_model_download", action="store_true")
     parser.add_argument("--eval_metric", type=str, default="wer")
     parser.add_argument(
-        "--device", type=str, default="cuda:1" if torch.cuda.is_available() else "cpu"
+        "--device", type=str, default=_default_device()
     )
     parser.add_argument("--prompt_length", type=int, default=40)
     parser.add_argument("--eval_mode", type=str, default="intapt")
@@ -338,6 +427,13 @@ def get_args():
 
 
 def mitigate_intapt():
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "INTapt evaluation requires an available CUDA GPU. The current "
+            "process cannot access CUDA, so the web demo cannot run the full "
+            "HuBERT evaluation here."
+        )
+
     args = Arguments()
 
     if args.eval_mode not in ["intapt", "base"]:
@@ -346,10 +442,7 @@ def mitigate_intapt():
 
     processor, model, prompt_generator = load_model(args)
 
-    if args.eval_metric == "wer":
-        metric = load("wer")
-    elif args.eval_metric == "cer":
-        metric = load("cer")
+    metric = _LocalSpeechMetric(args.eval_metric)
 
     data_collator = DataCollatorCTCWithPaddingCoraal(processor=processor, padding=True)
 

@@ -20,6 +20,7 @@ import backoff
 import concurrent.futures
 import random
 import os
+from MAF.utils.local_llm import generate_text, resolve_local_model_name, should_use_local_llm
 
 
 def chunks(lst, n):
@@ -46,6 +47,18 @@ def time_limit(seconds, msg=""):
 
 def gpt4_answer(inputs_with_prompts, engine, max_tokens):
     outputs = []
+    if should_use_local_llm(engine):
+        model_name = resolve_local_model_name(engine)
+        for prompt in tqdm(inputs_with_prompts):
+            outputs.append(
+                generate_text(
+                    prompt,
+                    model_name=model_name,
+                    max_new_tokens=max_tokens,
+                )
+            )
+        return outputs
+
     model = ParallelGPT(model_id=engine)
     for chunk_index, new_input in enumerate(tqdm(list(chunks(inputs_with_prompts, 5)))):
         generations = model.generate(

@@ -6,6 +6,7 @@ from openai import OpenAI
 
 from MAF.metric.latte.get_bias_score import GetBiasScore
 from MAF.metric.latte.get_llm_response import GetLLMResponse
+from MAF.utils.local_llm import generate_text, resolve_local_model_name, should_use_local_llm
 
 parent_dir = os.environ["PYTHONPATH"]
 MODEL_NAME = "gpt-4o-2024-05-13"
@@ -18,12 +19,21 @@ class ScoringToxicity:
     """
 
     def __init__(self, model_name: str = MODEL_NAME):
-        self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-        self.model_name = model_name
+        self.use_local = should_use_local_llm(model_name)
+        self.model_name = (
+            resolve_local_model_name(model_name) if self.use_local else model_name
+        )
+        self.client = None if self.use_local else OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
     def get_openai_response(
         self, text: str, instruction: str, end: str, temperature: float = 0
     ):
+        if self.use_local:
+            return generate_text(
+                instruction + text + end,
+                model_name=self.model_name,
+                max_new_tokens=32,
+            )
         output = self.client.chat.completions.create(
             model=self.model_name,
             temperature=temperature,
@@ -86,7 +96,16 @@ class ScoringToxicity:
             if re.findall(pattern, text.lower()) != []
             else text
         )
-        score = int(round(float(text)))
+        try:
+            score = int(round(float(text)))
+        except ValueError:
+            matches = re.findall(r"\b[01]\b", text)
+            if not matches:
+                matches = re.findall(r"\d+", text)
+            if not matches:
+                raise
+            score = int(round(float(matches[0])))
+        score = max(0, min(1, score))
         return score
 
 
@@ -95,7 +114,8 @@ def check_toxicity(sentence: str):
     toxicity_checker = ScoringToxicity()
     instruction, query = toxicity_checker.get_instruction()
     toxicity = toxicity_checker.get_openai_response(sentence, instruction, query)
-    if toxicity == 1:
+    toxicity_score = toxicity_checker.get_gpt4_score(toxicity)
+    if toxicity_score == 1:
         res["toxicity"] = "toxic"
     return res
 

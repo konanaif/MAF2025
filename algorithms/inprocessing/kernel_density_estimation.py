@@ -349,7 +349,7 @@ class KDEModel:
             self.params.fairness_type,
             self.n_class,
             self.n_protect,
-            np.unique(self.train_data.y),
+            np.unique(train_data.bias).astype(int),
         )
 
         trainloader = DataLoader(
@@ -467,7 +467,9 @@ class KernelDensityEstimation:
         kde.train(train_data)
         pred = kde.evaluation(test_data)
         pred_dataset = self.dataset_orig_test.copy(deepcopy=True)
-        pred_dataset.labels = np.array(pred)
+        if isinstance(pred, torch.Tensor):
+            pred = pred.detach().cpu().numpy()
+        pred_dataset.labels = np.asarray(pred).reshape(-1, 1)
         return pred_dataset
 
     def baseline_fit(self):

@@ -21,6 +21,16 @@ parent_dir = os.environ["PYTHONPATH"]
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _get_int_env(name, default=None):
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 class FairLoss(nn.Module):
     def __init__(self, alg="sipm"):
         super(FairLoss, self).__init__()
@@ -668,8 +678,15 @@ class SIPMDataset(StandardDataset):
 
             if not os.path.exists(filedir + "adult_train.csv"):
                 print("Generating adult train/val/test dataset")
-                self.train = pd.read_csv(filedir + "adult.data", header=None)
-                self.test = pd.read_csv(filedir + "adult.test", header=None)
+                self.train = pd.read_csv(
+                    filedir + "adult.data", header=None, skipinitialspace=True
+                )
+                self.test = pd.read_csv(
+                    filedir + "adult.test",
+                    header=None,
+                    skiprows=1,
+                    skipinitialspace=True,
+                )
                 columns = [
                     "age",
                     "workclass",
@@ -831,12 +848,13 @@ class SIPMLFR:
 
         # initialization hyps
         self.scaling = bool(scaling)
+        batch_size = _get_int_env("MAF_SIPMLFR_BATCH_SIZE", batch_size)
+        epochs = _get_int_env("MAF_SIPMLFR_EPOCHS", epochs)
+        eval_freq = _get_int_env("MAF_SIPMLFR_EVAL_FREQ", eval_freq)
         self.batch_size = batch_size
-        loaders = {
-            "adult": SIPMDataset(dataname="adult"),
-            "compas": SIPMDataset(dataname="compas"),
-        }
-        self.dataset = loaders[dataname]
+        if dataname not in {"adult", "compas"}:
+            raise ValueError(f"Unsupported sIPM-LFR dataset: {dataname}")
+        self.dataset = SIPMDataset(dataname=dataname)
         rep_dim = {"adult": 60, "compas": 8}
         self.rep_dim = rep_dim[dataname]
         self.epochs = epochs
@@ -1016,7 +1034,8 @@ class SIPMLFR:
         """ fine tune """
         print("::: Fine-tuning :::")
         model.melt_head_only()
-        for finetune_epoch in range(100):
+        finetune_epochs = _get_int_env("MAF_SIPMLFR_FINETUNE_EPOCHS", 100)
+        for finetune_epoch in range(finetune_epochs):
             finetune_epoch += self.epochs
             trainer._finetune(
                 self.train_dataloader,
